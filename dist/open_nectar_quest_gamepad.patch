@@ -1,0 +1,205 @@
+diff --git a/pc_port/pc_window.cpp b/pc_port/pc_window.cpp
+--- a/pc_port/pc_window.cpp
++++ b/pc_port/pc_window.cpp
+@@ -89,8 +89,24 @@ static bool pc_joystick_is_secondary(int index)
+ 	if (n.find("accelerometer") != std::string::npos)
+ 		return true;
+ 
++#if defined(__ANDROID__)
++	// Exclude Meta Quest (Horizon OS) internal VR Touch controllers and pointer devices
++	if (n.find("device 0x") != std::string::npos || n.find("oculus") != std::string::npos || n.find("meta quest") != std::string::npos)
++		return true;
++	char guidBuf[64] = { 0 };
++	SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(index);
++	SDL_JoystickGetGUIDString(g, guidBuf, sizeof(guidBuf));
++	std::string sGuid(guidBuf);
++	if (sGuid.find("3328") != std::string::npos) // Oculus / Meta vendor 0x2833
++		return true;
++
++	// Note: On Android, the Sony DualShock 4 / DualSense is named "Wireless Controller Touchpad"
++	// by Android's InputManager because it combines gamepad, axes, and touchpad.
++	// Only skip touchpad/sensors if it's NOT a real game controller or Wireless Controller!
++	if (n.find("wireless controller") == std::string::npos && n.find("dualshock") == std::string::npos && !SDL_IsGameController(index)) {
++		if (n.find("touchpad") != std::string::npos || n.find("motion sensors") != std::string::npos)
++			return true;
++	}
++#else
+ 	if (n.find("touchpad") != std::string::npos || n.find("motion sensors") != std::string::npos)
+ 		return true;
++#endif
+ 	return false;
+ }
+ 
+@@ -756,23 +772,36 @@ static int pc_window_single_pad_first_held_binding(SDL_GameController* controller)
+ 	return -1;
+ }
+ 
+-int pc_window_gamepad_first_held_binding(SDL_GameController* controller)
++static int pc_window_pad_first_held_binding(const PcOpenPad& pad)
+ {
+-	if (!controller) {
+-		if (!sOpenPads.empty() && sOpenPads[0].ctl)
+-			controller = sOpenPads[0].ctl;
+-		else
+-			return -1;
+-	}
+-	if (!sPlayerDeviceExplicit && controller == sControllers[0]) {
+-		for (const PcOpenPad& p : sOpenPads) {
+-			const int b = pc_window_single_pad_first_held_binding(p.ctl);
+-			if (b >= 0)
+-				return b;
+-		}
+-		return -1;
+-	}
+-	return pc_window_single_pad_first_held_binding(controller);
++	if (pad.ctl)
++		return pc_window_single_pad_first_held_binding(pad.ctl);
++	if (pad.joy) {
++		int numButtons = SDL_JoystickNumButtons(pad.joy);
++		for (int b = 0; b < numButtons; b++) {
++			if (SDL_JoystickGetButton(pad.joy, b))
++				return b;
++		}
++		int numAxes = SDL_JoystickNumAxes(pad.joy);
++		for (int a = 0; a < numAxes; a++) {
++			int v = SDL_JoystickGetAxis(pad.joy, a);
++			if (abs(v) > 16000)
++				return PC_GP_AXIS_BIND + a * 2 + (v > 0 ? 1 : 0);
++		}
++	}
++	return -1;
++}
++
++int pc_window_gamepad_first_held_binding(SDL_GameController* controller)
++{
++	for (const PcOpenPad& p : sOpenPads) {
++		if (controller && p.ctl && p.ctl != controller)
++			continue;
++		int b = pc_window_pad_first_held_binding(p);
++		if (b >= 0)
++			return b;
++	}
++	return -1;
+ }
+ 
+ bool pc_window_gamepad_any_held(SDL_GameController* controller)
+@@ -1454,6 +1483,22 @@ void pc_window_poll_events(PADStatus* pad) {
+                 LOGI("Event SDL_JOYDEVICEREMOVED: which=%d", event.jdevice.which);
+                 pc_controller_close_instance(event.jdevice.which);
+                 break;
++            case SDL_CONTROLLERAXISMOTION:
++                if (abs(event.caxis.value) > 16000) {
++                    if (!sPlayerDeviceExplicit && sAutoPadId[0] != event.caxis.which) {
++                        sAutoPadId[0] = event.caxis.which;
++                        resolvePlayerPads();
++                    }
++                }
++                break;
++            case SDL_JOYAXISMOTION:
++                if (abs(event.jaxis.value) > 16000) {
++                    if (!sPlayerDeviceExplicit && sAutoPadId[0] != event.jaxis.which) {
++                        sAutoPadId[0] = event.jaxis.which;
++                        resolvePlayerPads();
++                    }
++                }
++                break;
+             case SDL_CONTROLLERBUTTONDOWN:
+                 sLastPressKind = PC_INPUT_DEV_GAMEPAD;
+                 sLastPressId   = event.cbutton.which;
+@@ -1461,9 +1506,14 @@ void pc_window_poll_events(PADStatus* pad) {
++                if (!sPlayerDeviceExplicit && sAutoPadId[0] != event.cbutton.which) {
++                    sAutoPadId[0] = event.cbutton.which;
++                    resolvePlayerPads();
++                }
+                 {
+                     int p = 0;
+                     if (sPlayerDeviceExplicit && sPlayerDevice[1].kind == PC_INPUT_DEV_GAMEPAD && sPlayerDevice[1].id == event.cbutton.which) {
+                         p = 1;
+                     }
+-                    sGameCubeButtonLatch[p] |= pc_controller_button_to_gc(event.cbutton.button, p);
++                    u16 gcBtn = pc_controller_button_to_gc(event.cbutton.button, p);
++                    sGameCubeButtonLatch[p] |= gcBtn;
+                 }
+                 break;
+             case SDL_JOYBUTTONDOWN:
+@@ -1471,15 +1521,26 @@ void pc_window_poll_events(PADStatus* pad) {
+                 sLastPressId   = event.jbutton.which;
+                 sLastPressSerial++;
++                if (!sPlayerDeviceExplicit && sAutoPadId[0] != event.jbutton.which) {
++                    sAutoPadId[0] = event.jbutton.which;
++                    resolvePlayerPads();
++                }
+                 {
+                     int p = 0;
+                     if (sPlayerDeviceExplicit && sPlayerDevice[1].kind == PC_INPUT_DEV_GAMEPAD && sPlayerDevice[1].id == event.jbutton.which) {
+                         p = 1;
+                     }
+-                    int b = event.jbutton.button;
+-                    if (b == 0) sGameCubeButtonLatch[p] |= PAD_BUTTON_A;
+-                    else if (b == 1) sGameCubeButtonLatch[p] |= PAD_BUTTON_B;
+-                    else if (b == 2) sGameCubeButtonLatch[p] |= PAD_BUTTON_X;
+-                    else if (b == 3) sGameCubeButtonLatch[p] |= PAD_BUTTON_Y;
+-                    else if (b == 6) sGameCubeButtonLatch[p] |= PAD_BUTTON_START;
+-                    else if (b == 9) sGameCubeButtonLatch[p] |= PAD_TRIGGER_L;
+-                    else if (b == 10) sGameCubeButtonLatch[p] |= PAD_TRIGGER_Z;
++                    PcOpenPad* pad = pc_find_open_pad(event.jbutton.which);
++                    if (!pad || !pad->ctl) {
++                        int b = event.jbutton.button;
++                        int actA = p == 1 ? pc_window_get_gamepad_binding_p2(PC_KEY_ACT_A) : pc_window_get_gamepad_binding(PC_KEY_ACT_A);
++                        int actB = p == 1 ? pc_window_get_gamepad_binding_p2(PC_KEY_ACT_B) : pc_window_get_gamepad_binding(PC_KEY_ACT_B);
++                        int actX = p == 1 ? pc_window_get_gamepad_binding_p2(PC_KEY_ACT_X) : pc_window_get_gamepad_binding(PC_KEY_ACT_X);
++                        int actY = p == 1 ? pc_window_get_gamepad_binding_p2(PC_KEY_ACT_Y) : pc_window_get_gamepad_binding(PC_KEY_ACT_Y);
++                        int actStart = p == 1 ? pc_window_get_gamepad_binding_p2(PC_KEY_ACT_START) : pc_window_get_gamepad_binding(PC_KEY_ACT_START);
++
++                        if (b == (actA >= 0 ? actA : 0)) sGameCubeButtonLatch[p] |= PAD_BUTTON_A;
++                        else if (b == (actB >= 0 ? actB : 1)) sGameCubeButtonLatch[p] |= PAD_BUTTON_B;
++                        else if (b == (actX >= 0 ? actX : 2)) sGameCubeButtonLatch[p] |= PAD_BUTTON_X;
++                        else if (b == (actY >= 0 ? actY : 3)) sGameCubeButtonLatch[p] |= PAD_BUTTON_Y;
++                        else if (b == (actStart >= 0 ? actStart : 6)) sGameCubeButtonLatch[p] |= PAD_BUTTON_START;
++                        else if (b == 9) sGameCubeButtonLatch[p] |= PAD_TRIGGER_L;
++                        else if (b == 10) sGameCubeButtonLatch[p] |= PAD_TRIGGER_Z;
++                    }
+                 }
+                 break;
+@@ -1694,17 +1755,18 @@ void pc_window_poll_events(PADStatus* pad) {
+     sPadDpadDownHeld[0] = sPadDpadDownHeld[1] = false;
+     sFpPadAccum[0] = sFpPadAccum[1] = false;
+     sBombPadAccum[0] = sBombPadAccum[1] = false;
++    PcOpenPad* p0 = nullptr;
+     if (!sPlayerDeviceExplicit) {
+-        if (!sOpenPads.empty()) {
+-            usedGamepad = pc_window_read_open_pad(sOpenPads[0], button, stickX, stickY, substickX, substickY,
+-                                                 triggerL, triggerR, sSwarmHeld, 0);
+-        }
+-    } else if (sControllers[0] || (sAutoPadId[0] >= 0 && pc_find_open_pad(sAutoPadId[0]))) {
+-        PcOpenPad* p = pc_find_open_pad(sPlayerDevice[0].id);
+-        if (p) {
+-            usedGamepad = pc_window_read_open_pad(*p, button, stickX, stickY, substickX, substickY,
+-                                                 triggerL, triggerR, sSwarmHeld, 0);
+-        }
++        if (sAutoPadId[0] >= 0)
++            p0 = pc_find_open_pad(sAutoPadId[0]);
++        if (!p0 && !sOpenPads.empty())
++            p0 = &sOpenPads[0];
++    } else if (sControllers[0] || (sPlayerDevice[0].id >= 0 && pc_find_open_pad(sPlayerDevice[0].id))) {
++        p0 = pc_find_open_pad(sPlayerDevice[0].id);
++    }
++    if (p0) {
++        usedGamepad = pc_window_read_open_pad(*p0, button, stickX, stickY, substickX, substickY,
++                                             triggerL, triggerR, sSwarmHeld, 0);
+     }
+     // Merge latched button presses from event queue (quick taps are never dropped)
+     button |= sGameCubeButtonLatch[0];
+@@ -1936,10 +1998,11 @@ void pc_window_shutdown(void) {
+ #if PIKI_USE_JAUDIO
+     StopAudioThread();
+ #endif
+     pc_audio_shutdown();
+-    for (const PcOpenPad& p : sOpenPads)
+-        SDL_GameControllerClose(p.ctl);
++    for (const PcOpenPad& p : sOpenPads) {
++        if (p.ctl) SDL_GameControllerClose(p.ctl);
++        else if (p.joy) SDL_JoystickClose(p.joy);
++    }
+     sControllers[0] = sControllers[1] = nullptr;
+     if (sGLContext) {

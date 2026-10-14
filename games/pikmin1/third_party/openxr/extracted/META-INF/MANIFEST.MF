@@ -1,0 +1,10 @@
+Manifest-Version: 1.0
+Name: org/khronos/openxr/openxr_loader_for_android
+Specification-Title: OpenXR Loader for Android
+Specification-Version: 1.1.42
+Specification-Vendor: The Khronos Group Inc.
+Implementation-Title: OpenXR standard cross-vendor loader for Android
+Implementation-Version: 1.1.42
+Implementation-Vendor: The Khronos Group Inc.
+Created-By: 17.0.12 (Debian)
+

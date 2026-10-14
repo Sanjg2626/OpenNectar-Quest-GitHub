@@ -1,0 +1,29 @@
+/build/
+/run/
+!/run/.gitkeep
+games/*/android/.gradle/
+games/*/android/app/.cxx/
+games/*/android/app/build/
+games/*/shader_cache/
+games/*/*.log
+
+
+# Datos del juego y ficheros que no se publican
+*.[iI][sS][oO]
+*.tar.gz
+*.apk
+*.zip
+games/*/orig/*/*
+!games/*/orig/*/.gitkeep
+games/*/assets/*
+!games/*/assets/README.md
+games/*/save/
+games/*/patches/backup-*/
+games/*/pikmin_settings.conf
+games/*/vs_positions*.txt
+games/pikmin2/pikmin2-decomp/aoi.exe
+/discord_icons/
+
+# Salida de los scripts de release
+build-release/
+release-out/
